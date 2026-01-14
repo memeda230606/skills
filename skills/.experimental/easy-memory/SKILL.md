@@ -47,6 +47,18 @@ All other scripts require `init.log` to exist and will exit if initialization ha
 3. Before finishing or submitting any task, append a new entry with `scripts/write_memory.py` following the log rules below.
 4. Log entries should be written in English when possible; UTF-8 is accepted.
 
+## Remote repository alignment gate (must follow)
+
+Condition precedent. Prior to executing `scripts/write_memory.py`, the agent shall determine, with reasonable diligence, whether any Remote Alignment Operation is expected to occur after the time of writing within the same task or session.
+
+For purposes of this skill, a "Remote Alignment Operation" means any action that publishes, synchronizes, or otherwise updates a remote code repository or mirror, including but not limited to `git push`, `svn commit`, `hg push`, and any API- or UI-based upload of code changes to Git-, SVN-, or similar systems.
+
+If a Remote Alignment Operation is expected or cannot be reasonably ruled out, the agent shall, before initiating any Repository-Change Operation, write memory in accordance with this skill and shall not perform any Repository-Change Operation until the memory entry has been written.
+
+For purposes of this skill, a "Repository-Change Operation" includes any action that modifies tracked files or repository history, including edits to tracked files, staging, commits, amend/merge/rebase/cherry-pick, and related history-rewriting actions.
+
+For avoidance of doubt, if no Remote Alignment Operation is expected after the time of writing and this can be reasonably confirmed, the agent may proceed with the ordinary timing for memory writing, subject to the Mandatory workflow above.
+
 ## Log entry format
 
 Each entry is a single line and must end with a timestamp:
