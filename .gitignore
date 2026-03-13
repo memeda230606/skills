@@ -5,5 +5,8 @@
 __pycache__/
 *.pyc
 
-# Easy-memory logs
-easy-memory/
+# Project-local easy-memory logs
+/easy-memory/
+
+# Runtime-generated logs inside the experimental easy-memory skill
+skills/.experimental/easy-memory/logs/
