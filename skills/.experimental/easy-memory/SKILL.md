@@ -201,7 +201,7 @@ This script is stricter than a connectivity check:
 - it runs both `search_memory.py` and `read_today_log.py` from the same working directory,
 - it expects both commands to return the machine-readable agent success block rather than raw fallback output.
 
-The default search keywords are `easy-memory`, `qwen3.5`, and `192.168.3.8`.
+The default search keywords are `easy-memory`, `memory-agent`, and `codex`.
 Override them with repeated `--search-keyword` arguments when validating a different project or provider.
 If you want the smoke test to fail whenever the shared installation-directory failure log grows during the run, add `--strict-no-new-failures`.
 If you want the final machine-readable report written to disk as well as printed to stdout, add `--json-output-file <path>`.
@@ -219,8 +219,12 @@ Logs are always stored under `./easy-memory` relative to the directory where you
 - The recommended project-local config file for future memory-agent runtime settings is `./easy-memory/agent-config.json`.
 - Environment variables should override the local config file so machine-specific or temporary values do not require rewriting project-local state.
 - A canonical local config example is available at `assets/examples/agent-config.example.json`.
+- In Codex environments, the preferred default provider is `codex_exec`, which uses the installed `codex` CLI instead of direct HTTP model calls.
+- The default Codex provider model should be `gpt-5.3-codex-spark`.
+- `codex_service_tier` should default to `fast`, and `codex_reasoning_effort` should default to `medium`, while both remain locally configurable.
+- `codex_profile` and `codex_binary` may also be provided for host-specific setups.
 - For local OpenAI-compatible runtimes, `api_key` may be omitted when the endpoint does not require authentication.
-- `api_style` may be used to select `openai_chat_completions` or `ollama_native_chat`.
+- `api_style` may be used to select `codex_exec`, `openai_chat_completions`, or `ollama_native_chat`.
 - `disable_thinking` may be used to request `think:false` when `api_style` is `ollama_native_chat` and the selected Ollama model supports thinking.
 - If agent mode is enabled but any agent-side error occurs, including network errors, timeouts, protocol/schema problems, or unexpected runtime exceptions, the scripts must fall back to the same raw output they would produce with agent mode disabled.
 - When such an agent-side fallback happens, the scripts should also append a diagnostic error record containing the full available response content to a runtime-generated error log in the installed skill directory, so cross-project model compatibility issues can be audited and corrected later.

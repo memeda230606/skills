@@ -59,6 +59,12 @@ For future memory-management agent support, use this split:
 If the installer targets Codex:
 - keep `agents/openai.yaml` as the canonical metadata file inside the skill package,
 - avoid inventing additional required Codex-only directories beyond the upstream package layout unless the host explicitly requires local generated artifacts.
+- prefer a generated local config that uses `api_style: "codex_exec"` instead of adding an HTTP provider by default.
+- when generating a default Codex local config, prefer:
+  - `model: "gpt-5.3-codex-spark"`
+  - `codex_service_tier: "fast"`
+  - `codex_reasoning_effort: "medium"`
+  - no API key or base URL fields unless the user explicitly selects an external provider.
 
 If the installer targets Claude Code:
 - prefer generating local adapter artifacts from the canonical prompt and metadata sources rather than making Claude-specific files the source of truth,

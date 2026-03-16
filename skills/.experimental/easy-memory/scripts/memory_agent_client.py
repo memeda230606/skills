@@ -3,11 +3,18 @@ from __future__ import annotations
 import json
 import re
 import socket
+import subprocess
+import tempfile
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Mapping
 from urllib import error, parse, request
 
-from memory_agent_config import MemoryAgentConfig, load_system_prompt_text
+from memory_agent_config import (
+    DEFAULT_CODEX_MODEL,
+    MemoryAgentConfig,
+    load_system_prompt_text,
+)
 
 SCHEMA_VERSION = "easy_memory_agent_response_v1"
 SCRIPT_OUTPUT_SCHEMA_VERSION = "easy_memory_agent_script_output_v1"
@@ -127,7 +134,14 @@ def call_memory_agent(
     )
     response_schema = build_response_json_schema(request_mode)
 
-    if config.api_style == "ollama_native_chat":
+    if config.api_style == "codex_exec":
+        response_json, content_text = _run_codex_exec(
+            config=config,
+            system_prompt=system_prompt,
+            request_payload=request_payload,
+            response_schema=response_schema,
+        )
+    elif config.api_style == "ollama_native_chat":
         api_payload = build_ollama_chat_payload(
             model=config.model or "",
             system_prompt=system_prompt,
@@ -192,6 +206,192 @@ def call_memory_agent(
         content_text=content_text,
         parsed_payload=parsed_payload,
     )
+
+
+def build_codex_exec_prompt(
+    *,
+    system_prompt: str,
+    request_payload: Mapping[str, Any],
+) -> str:
+    return "\n\n".join(
+        [
+            "You are running inside Codex CLI exec as a pure JSON preprocessing step for easy-memory.",
+            (
+                "Do not use shell commands, do not inspect the workspace, "
+                "do not call MCP tools, and do not modify any files. "
+                "Use only the provided request payload."
+            ),
+            "Return exactly one JSON object that matches the supplied output schema.",
+            "Canonical prompt:",
+            system_prompt,
+            "Input payload JSON:",
+            json.dumps(
+                dict(request_payload),
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+        ]
+    )
+
+
+def _run_codex_exec(
+    *,
+    config: MemoryAgentConfig,
+    system_prompt: str,
+    request_payload: Mapping[str, Any],
+    response_schema: Mapping[str, Any],
+) -> tuple[dict[str, Any], str]:
+    prompt_text = build_codex_exec_prompt(
+        system_prompt=system_prompt,
+        request_payload=request_payload,
+    )
+    with tempfile.TemporaryDirectory(prefix="easy-memory-codex-exec-") as tmp_dir:
+        tmp_path = Path(tmp_dir)
+        schema_path = tmp_path / "response-schema.json"
+        output_path = tmp_path / "response.json"
+        schema_path.write_text(
+            json.dumps(dict(response_schema), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        command = build_codex_exec_command(
+            config=config,
+            schema_path=schema_path,
+            output_path=output_path,
+            prompt_text=prompt_text,
+        )
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=Path.cwd(),
+                capture_output=True,
+                text=True,
+                timeout=config.timeout_seconds,
+                check=False,
+            )
+        except FileNotFoundError as exc:
+            raise MemoryAgentTransportError(
+                f"Codex CLI executable not found: {config.codex_binary}"
+            ) from exc
+        except subprocess.TimeoutExpired as exc:
+            raise MemoryAgentTransportError(
+                "Codex exec request timed out.",
+                raw_api_response={
+                    "command": command,
+                    "stdout": exc.stdout,
+                    "stderr": exc.stderr,
+                },
+                response_body=_format_codex_exec_output(
+                    stdout_text=exc.stdout,
+                    stderr_text=exc.stderr,
+                ),
+            ) from exc
+
+        output_text = (
+            output_path.read_text(encoding="utf-8").strip()
+            if output_path.exists()
+            else ""
+        )
+        raw_response = {
+            "command": command,
+            "returncode": completed.returncode,
+            "stdout": completed.stdout,
+            "stderr": completed.stderr,
+            "output_file": output_text,
+        }
+        if completed.returncode != 0:
+            raise MemoryAgentTransportError(
+                f"Codex exec failed with exit code {completed.returncode}.",
+                raw_api_response=raw_response,
+                response_body=_format_codex_exec_output(
+                    stdout_text=completed.stdout,
+                    stderr_text=completed.stderr,
+                ),
+            )
+
+        content_text = output_text or _extract_codex_exec_content(completed.stdout)
+        if not content_text:
+            raise MemoryAgentProtocolError(
+                "Codex exec did not produce a structured response.",
+                raw_api_response=raw_response,
+                response_body=_format_codex_exec_output(
+                    stdout_text=completed.stdout,
+                    stderr_text=completed.stderr,
+                ),
+            )
+        return raw_response, content_text
+
+
+def build_codex_exec_command(
+    *,
+    config: MemoryAgentConfig,
+    schema_path: Path,
+    output_path: Path,
+    prompt_text: str,
+) -> list[str]:
+    command = [
+        config.codex_binary,
+        "exec",
+        "--ephemeral",
+        "--color",
+        "never",
+        "-s",
+        "read-only",
+        "--skip-git-repo-check",
+        "-m",
+        config.model or DEFAULT_CODEX_MODEL,
+        "--output-schema",
+        str(schema_path),
+        "-o",
+        str(output_path),
+    ]
+    if config.codex_profile:
+        command.extend(["-p", config.codex_profile])
+    if config.codex_service_tier:
+        command.extend(
+            [
+                "-c",
+                f"service_tier={_toml_string_literal(config.codex_service_tier)}",
+            ]
+        )
+    if config.codex_reasoning_effort:
+        command.extend(
+            [
+                "-c",
+                "model_reasoning_effort="
+                f"{_toml_string_literal(config.codex_reasoning_effort)}",
+            ]
+        )
+    command.append(prompt_text)
+    return command
+
+
+def _toml_string_literal(value: str) -> str:
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def _extract_codex_exec_content(stdout_text: str) -> str:
+    stripped = stdout_text.strip()
+    if not stripped:
+        return ""
+    lines = [line.strip() for line in stripped.splitlines() if line.strip()]
+    for line in reversed(lines):
+        if line.startswith("{") and line.endswith("}"):
+            return line
+    return stripped
+
+
+def _format_codex_exec_output(
+    *,
+    stdout_text: str | None,
+    stderr_text: str | None,
+) -> str:
+    sections = []
+    if stdout_text:
+        sections.append(f"stdout:\n{stdout_text}")
+    if stderr_text:
+        sections.append(f"stderr:\n{stderr_text}")
+    return "\n\n".join(sections) if sections else ""
 
 
 def build_chat_completions_payload(

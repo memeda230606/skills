@@ -9,7 +9,11 @@ import time
 from pathlib import Path
 
 from memory_agent_client import SCRIPT_OUTPUT_BEGIN, SCRIPT_OUTPUT_END
-from memory_agent_config import default_local_config_file, installed_skill_dir
+from memory_agent_config import (
+    default_local_config_file,
+    installed_skill_dir,
+    load_memory_agent_config,
+)
 from memory_agent_failure_log import agent_failure_log_path
 from memory_utils import log_base_dir, require_initialized
 
@@ -36,7 +40,7 @@ def parse_args() -> argparse.Namespace:
         default=[],
         help=(
             "Keyword passed to search_memory.py. Repeat to provide multiple "
-            "keywords. Defaults to easy-memory, qwen3.5, and 192.168.3.8."
+            "keywords. Defaults to easy-memory, memory-agent, and codex."
         ),
     )
     parser.add_argument(
@@ -96,9 +100,10 @@ def main() -> int:
 
     keywords = args.search_keywords or [
         "easy-memory",
-        "qwen3.5",
-        "192.168.3.8",
+        "memory-agent",
+        "codex",
     ]
+    config = load_memory_agent_config()
     failure_log = agent_failure_log_path(installed_skill_dir())
     failure_log_before = count_log_lines(failure_log)
 
@@ -142,6 +147,18 @@ def main() -> int:
         "cwd": str(Path.cwd()),
         "config_file": str(config_file),
         "json_output_file": str(output_file) if output_file else None,
+        "agent_config": {
+            "enabled": config.enabled,
+            "api_style": config.api_style,
+            "model": config.model,
+            "base_url": config.base_url,
+            "codex_binary": config.codex_binary,
+            "codex_profile": config.codex_profile,
+            "codex_service_tier": config.codex_service_tier,
+            "codex_reasoning_effort": config.codex_reasoning_effort,
+            "disable_thinking": config.disable_thinking,
+            "timeout_seconds": config.timeout_seconds,
+        },
         "failure_log": {
             "path": str(failure_log),
             "before_lines": failure_log_before,

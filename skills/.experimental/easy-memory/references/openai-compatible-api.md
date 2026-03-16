@@ -2,6 +2,11 @@
 
 This document defines the canonical runtime contract for the future memory-management agent integration used by `easy-memory`.
 
+Despite the historical file name, this reference now covers:
+- OpenAI-compatible HTTP providers
+- Ollama native chat providers
+- Codex CLI exec as the preferred host-local provider inside Codex environments
+
 ## Scope
 
 This contract is for optional preprocessing during:
@@ -64,6 +69,10 @@ Future implementations should support these local configuration keys:
 - `EASY_MEMORY_AGENT_DISABLE_THINKING`
 - `EASY_MEMORY_AGENT_TIMEOUT_SECONDS`
 - `EASY_MEMORY_AGENT_SYSTEM_PROMPT_FILE`
+- `EASY_MEMORY_AGENT_CODEX_BINARY`
+- `EASY_MEMORY_AGENT_CODEX_PROFILE`
+- `EASY_MEMORY_AGENT_CODEX_SERVICE_TIER`
+- `EASY_MEMORY_AGENT_CODEX_REASONING_EFFORT`
 
 `EASY_MEMORY_AGENT_SYSTEM_PROMPT_FILE` is an optional local override. If unset, the canonical prompt source should be the installed `references/memory-agent-system-prompt.md`.
 
@@ -86,6 +95,10 @@ Recommended JSON keys in the local config file:
 - `api_key`
 - `model`
 - `disable_thinking`
+- `codex_binary`
+- `codex_profile`
+- `codex_service_tier`
+- `codex_reasoning_effort`
 - `timeout_seconds`
 - `system_prompt_file`
 
@@ -94,11 +107,11 @@ Example:
 ```json
 {
   "enabled": true,
-  "api_style": "openai_chat_completions",
-  "base_url": "https://example.com/v1",
-  "model": "gpt-4.1-mini",
-  "disable_thinking": false,
-  "timeout_seconds": 20,
+  "api_style": "codex_exec",
+  "model": "gpt-5.3-codex-spark",
+  "codex_service_tier": "fast",
+  "codex_reasoning_effort": "medium",
+  "timeout_seconds": 120,
   "system_prompt_file": "./easy-memory/custom-memory-agent-prompt.md"
 }
 ```
@@ -107,12 +120,23 @@ This file is local runtime state. It must not be treated as canonical skill sour
 If the provider does not require authentication, `api_key` may be omitted or set to an empty string.
 `api_style` must describe the transport contract used by the runtime implementation.
 Current supported values are:
+- `codex_exec`
 - `openai_chat_completions`
 - `ollama_native_chat`
 
 `disable_thinking` is a provider-specific runtime toggle.
 It is intended primarily for local Ollama deployments that expose native thinking-capable models.
 When the selected transport does not support an explicit thinking toggle, the implementation may ignore this field.
+
+The Codex-exec-specific keys are optional local runtime settings:
+- `codex_binary`
+  - default: `codex`
+- `codex_profile`
+  - optional Codex profile name passed to `codex exec -p`
+- `codex_service_tier`
+  - default for `codex_exec`: `fast`
+- `codex_reasoning_effort`
+  - default for `codex_exec`: `medium`
 
 The canonical example fixture for this local config file should live at:
 - `assets/examples/agent-config.example.json`
@@ -129,6 +153,42 @@ The minimum required compatibility target is an OpenAI-compatible Chat Completio
 Some local OpenAI-compatible runtimes may also accept the full `/v1/chat/completions` URL directly and may not require an API key.
 
 Future implementations may add support for Responses-style APIs, but Chat Completions is the canonical minimum contract for broad compatibility.
+
+## Preferred Codex CLI Exec Provider
+
+Inside Codex environments, runtime implementations may support a host-local `codex_exec` provider as the preferred default.
+
+This provider does not call an external HTTP endpoint directly. Instead it:
+- executes the installed `codex` CLI locally,
+- uses the current Codex authentication state,
+- selects a configured Codex model,
+- requests a strict JSON result with `--output-schema`,
+- and still validates the returned payload against the same downstream memory-agent schema.
+
+Recommended local config for this mode:
+
+```json
+{
+  "enabled": true,
+  "api_style": "codex_exec",
+  "model": "gpt-5.3-codex-spark",
+  "codex_service_tier": "fast",
+  "codex_reasoning_effort": "medium",
+  "timeout_seconds": 120
+}
+```
+
+Recommended defaults for `codex_exec`:
+- model: `gpt-5.3-codex-spark`
+- service tier: `fast`
+- reasoning effort: `medium`
+- timeout: `120` seconds
+
+The runtime should invoke `codex exec` in a safe, non-interactive mode:
+- read-only sandbox
+- ephemeral session
+- explicit output schema
+- no dependency on project-local HTTP credentials
 
 ## Optional Ollama Native Extension
 
@@ -179,6 +239,11 @@ The canonical request schema version for agent calls should be:
 - `easy_memory_agent_request_v1`
 
 Runtime implementations should prefer an OpenAI-compatible `json_schema` response-format constraint for this response contract. If a provider rejects `response_format`, the implementation may retry without it, but schema validation of the returned JSON must remain strict.
+
+For `codex_exec`, the runtime should pass the same request payload and response schema to `codex exec`, typically by:
+- embedding the request payload JSON in the prompt,
+- supplying the strict response JSON schema via `--output-schema`,
+- and preserving the same validation and fallback rules after the command returns.
 
 Each entry object should include:
 - `entry_id`
