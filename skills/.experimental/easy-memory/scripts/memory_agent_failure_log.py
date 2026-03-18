@@ -44,7 +44,7 @@ def append_agent_failure_log(
         "raw_api_response": _extract_raw_api_response(error=error, response=response),
         "content_text": _extract_content_text(error=error, response=response),
         "response_body": _extract_response_body(error=error),
-        "parsed_payload": dict(response.parsed_payload) if response else None,
+        "rendered_output": response.rendered_output if response else None,
         "traceback": _format_traceback(error),
     }
     try:

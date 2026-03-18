@@ -17,9 +17,9 @@ The canonical contract remains:
 - Provider endpoint: `https://openrouter.ai/api/v1/chat/completions`
 - Test scope: experimental `easy-memory` only
 - Primary test path: `scripts/read_today_log.py`
-- Success criterion: the script returned the machine-readable block delimited by:
-  - `EASY_MEMORY_AGENT_RESULT_BEGIN`
-  - `EASY_MEMORY_AGENT_RESULT_END`
+- Historical success criterion at that time: the script returned the older
+  structured success block used before the lightweight plain-text filtering
+  contract was introduced on `2026-03-18`
 
 ## Test Method
 
@@ -33,7 +33,7 @@ All primary comparisons below used the same basic harness:
 
 The goal was not to measure model intelligence in general.
 The goal was to measure practical suitability for the `easy-memory` preprocessing path, especially:
-- structured JSON compliance
+- agent-output stability for the then-current contract
 - stable fallback behavior
 - cost efficiency
 - response latency

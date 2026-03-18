@@ -23,8 +23,8 @@ kept stable even though their meaning is now broader.
   - Historical object field name
   - Current meaning: unique related resource ID
 - `path_ids`
-  - Historical agent-response field name
-  - Current meaning: list of related resource IDs
+  - Historical agent-response field name from the older structured-response contract
+  - Current meaning when encountered: list of related resource IDs
 - `--related-path`
   - Historical CLI option name
   - Current meaning: local absolute path or URL/document address
@@ -38,7 +38,8 @@ kept stable even though their meaning is now broader.
 ## Stable Compatibility Rules
 
 - Existing logs that use `PATHS` remain valid.
-- Existing payloads that use `path_id` and `path_ids` remain valid.
+- Existing payloads that use `path_id` and older structured responses that use
+  `path_ids` remain valid.
 - Existing automation or tooling that calls `--related-path`, `--path-update`, or
   `--path-clear` does not need renaming.
 - New implementations should interpret these historical names using the broader

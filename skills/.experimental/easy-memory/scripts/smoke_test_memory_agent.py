@@ -8,7 +8,7 @@ import sys
 import time
 from pathlib import Path
 
-from memory_agent_client import SCRIPT_OUTPUT_BEGIN, SCRIPT_OUTPUT_END
+from memory_agent_client import SUMMARY_PREFIX
 from memory_agent_config import (
     default_local_config_file,
     installed_skill_dir,
@@ -208,57 +208,55 @@ def run_cli_test(
             f"stderr:\n{stderr_text}"
         )
 
-    payload = extract_success_payload(
-        stdout_text=completed.stdout,
+    stderr_text = completed.stderr.strip()
+    if "Memory-agent fallback:" in stderr_text:
+        raise SystemExit(
+            f"{script_name} fell back to raw output.\n"
+            f"stdout:\n{completed.stdout.strip()}\n"
+            f"stderr:\n{stderr_text}"
+        )
+
+    stdout_text = completed.stdout.strip()
+    if not stdout_text:
+        raise SystemExit(
+            f"{script_name} returned empty stdout."
+        )
+    summary_line = extract_summary_line(
+        stdout_text=stdout_text,
         script_name=script_name,
     )
-    payload_mode = payload.get("mode")
-    if payload_mode != mode:
-        raise SystemExit(
-            f"{script_name} returned mode {payload_mode!r}; expected {mode!r}."
-        )
-    status = payload.get("status")
-    if status not in {"ok", "no_relevant_memory"}:
-        raise SystemExit(
-            f"{script_name} returned unsupported agent status: {status!r}"
-        )
 
     return {
         "script": script_name,
         "mode": mode,
         "elapsed_seconds": elapsed_seconds,
-        "status": status,
-        "summary": payload.get("summary"),
+        "status": "ok",
+        "summary": summary_line.removeprefix(SUMMARY_PREFIX).strip(),
     }
 
 
-def extract_success_payload(
+def extract_summary_line(
     *,
     stdout_text: str,
     script_name: str,
-) -> dict[str, object]:
-    begin_index = stdout_text.find(SCRIPT_OUTPUT_BEGIN)
-    end_index = stdout_text.find(SCRIPT_OUTPUT_END)
-    if begin_index < 0 or end_index < 0 or end_index <= begin_index:
+) -> str:
+    nonempty_lines = [
+        line.strip()
+        for line in stdout_text.splitlines()
+        if line.strip()
+    ]
+    if not nonempty_lines:
         raise SystemExit(
-            f"{script_name} did not return the expected agent success block.\n"
+            f"{script_name} did not return any non-empty output.\n"
             f"stdout:\n{stdout_text}\n"
         )
-    json_text = stdout_text[
-        begin_index + len(SCRIPT_OUTPUT_BEGIN) : end_index
-    ].strip()
-    try:
-        payload = json.loads(json_text)
-    except json.JSONDecodeError as exc:
+    summary_line = nonempty_lines[-1]
+    if not summary_line.startswith(SUMMARY_PREFIX):
         raise SystemExit(
-            f"{script_name} returned an invalid JSON success block.\n"
-            f"payload:\n{json_text}"
-        ) from exc
-    if not isinstance(payload, dict):
-        raise SystemExit(
-            f"{script_name} returned a non-object JSON success block."
+            f"{script_name} did not end with the expected summary line.\n"
+            f"stdout:\n{stdout_text}\n"
         )
-    return payload
+    return summary_line
 
 
 def count_log_lines(log_path: Path) -> int:

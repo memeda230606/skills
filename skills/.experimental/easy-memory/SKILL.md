@@ -124,8 +124,8 @@ When an entry includes `PATHS` metadata, the output must also return the related
 Older entries without `PATHS` metadata must remain readable without errors.
 `--task-context` is required.
 - When the memory-management agent is not enabled, the script should only validate that it is non-empty and then ignore it.
-- When the memory-management agent is enabled and returns a valid response, the script may return a machine-readable task-relevant result block instead of the full raw log.
-- If the agent requests fallback or fails, the script must fall back to the raw log output.
+- When the memory-management agent is enabled and returns a valid response, the script may return only the retained task-relevant memory blocks in their original format, followed by a final `[SUMMARY]` line.
+- If the agent fails or returns unusable output, the script must fall back to the raw log output.
 
 ### Search memory
 
@@ -142,8 +142,8 @@ When a matched entry includes `PATHS` metadata, the output must also return the 
 Older entries without `PATHS` metadata must remain searchable without errors.
 `--task-context` is required.
 - When the memory-management agent is not enabled, the script should only validate that it is non-empty and then ignore it.
-- When the memory-management agent is enabled and returns a valid response, the script may return a machine-readable task-relevant result block instead of the raw ranked match list.
-- If the agent requests fallback or fails, the script must fall back to the raw search output.
+- When the memory-management agent is enabled and returns a valid response, the script may return only the retained task-relevant search blocks in their original format, followed by a final `[SUMMARY]` line.
+- If the agent fails or returns unusable output, the script must fall back to the raw search output.
 
 ### Write memory
 
@@ -199,12 +199,12 @@ Runs a small end-to-end verification for the current project-local memory-agent 
 This script is stricter than a connectivity check:
 - it requires the current project-local `./easy-memory/agent-config.json` to exist,
 - it runs both `search_memory.py` and `read_today_log.py` from the same working directory,
-- it expects both commands to return the machine-readable agent success block rather than raw fallback output.
+- it expects both commands to return agent-filtered plain-text output ending in a `[SUMMARY]` line rather than raw fallback output.
 
 The default search keywords are `easy-memory`, `memory-agent`, and `codex`.
 Override them with repeated `--search-keyword` arguments when validating a different project or provider.
 If you want the smoke test to fail whenever the shared installation-directory failure log grows during the run, add `--strict-no-new-failures`.
-If you want the final machine-readable report written to disk as well as printed to stdout, add `--json-output-file <path>`.
+If you want the final smoke-test report written to disk as well as printed to stdout, add `--json-output-file <path>`.
 If you want successful runs to stay silent on stdout and rely only on the report file, add `--quiet` together with `--json-output-file`.
 
 ## Log location rule
@@ -239,7 +239,7 @@ The canonical source files for future memory-management agent support are:
 - `references/memory-agent-system-prompt.md`
 - `references/script-output-schema.md`
 
-These files define UI metadata, configuration boundaries, request/response contracts, and the canonical preprocessing prompt. Runtime implementations in `scripts/` should be added only after these canonical files are stable enough to implement against.
+These files define UI metadata, configuration boundaries, the lightweight plain-text filtering contract, and the canonical preprocessing prompt. Runtime implementations in `scripts/` should be added only after these canonical files are stable enough to implement against.
 
 ## Reminder to repeat each session
 

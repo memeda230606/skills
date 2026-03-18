@@ -16,16 +16,17 @@ from memory_agent_config import (
     load_system_prompt_text,
 )
 
-SCHEMA_VERSION = "easy_memory_agent_response_v1"
-SCRIPT_OUTPUT_SCHEMA_VERSION = "easy_memory_agent_script_output_v1"
-SCRIPT_OUTPUT_BEGIN = "EASY_MEMORY_AGENT_RESULT_BEGIN"
-SCRIPT_OUTPUT_END = "EASY_MEMORY_AGENT_RESULT_END"
 ALLOWED_MODES = {"read_today_log", "search_memory"}
-ALLOWED_STATUS_VALUES = {"ok", "no_relevant_memory", "needs_raw_fallback"}
-_FENCED_JSON_RE = re.compile(
-    r"^```(?:json)?\s*\n(?P<body>.*)\n```$",
+SUMMARY_PREFIX = "[SUMMARY]"
+SUMMARY_MAX_CHARS = 500
+_FENCED_BLOCK_RE = re.compile(
+    r"^```(?:[^\n`]*)\s*\n(?P<body>.*)\n```$",
     re.DOTALL,
 )
+_SUMMARY_LINE_RE = re.compile(
+    r"^(?:\[SUMMARY\]|SUMMARY:|Summary:)\s*(?P<body>.*)$"
+)
+_ENTRY_ID_RE = re.compile(r"\[ID:(?P<id>[^\]]+)\]")
 _UNSET = object()
 
 
@@ -85,39 +86,7 @@ class MemoryAgentSchemaError(MemoryAgentClientError):
 class MemoryAgentResponse:
     raw_api_response: dict[str, Any]
     content_text: str
-    parsed_payload: dict[str, Any]
-
-
-def format_script_output_block(
-    mode: str,
-    response_payload: Mapping[str, Any],
-    entries: list[Mapping[str, Any]],
-    important_notice: str | None = None,
-) -> str:
-    output_payload = {
-        "schema_version": SCRIPT_OUTPUT_SCHEMA_VERSION,
-        "mode": mode,
-        "status": response_payload["status"],
-        "summary": response_payload["summary"],
-        "suggested_keywords": response_payload["suggested_keywords"],
-        "warnings": response_payload["warnings"],
-        "entries": entries,
-    }
-    if important_notice is not None:
-        output_payload["important_notice"] = important_notice
-
-    rendered_json = json.dumps(
-        output_payload,
-        ensure_ascii=False,
-        indent=2,
-    )
-    return "\n".join(
-        [
-            SCRIPT_OUTPUT_BEGIN,
-            rendered_json,
-            SCRIPT_OUTPUT_END,
-        ]
-    )
+    rendered_output: str
 
 
 def call_memory_agent(
@@ -132,34 +101,25 @@ def call_memory_agent(
         request_mode=request_mode,
         request_payload=request_payload,
     )
-    response_schema = build_response_json_schema(request_mode)
 
     if config.api_style == "codex_exec":
         response_json, content_text = _run_codex_exec(
             config=config,
             system_prompt=system_prompt,
             request_payload=request_payload,
-            response_schema=response_schema,
         )
     elif config.api_style == "ollama_native_chat":
         api_payload = build_ollama_chat_payload(
             model=config.model or "",
             system_prompt=system_prompt,
             request_payload=request_payload,
-            response_schema=response_schema,
             disable_thinking=config.disable_thinking,
         )
-        response_json = _post_ollama_chat_with_fallback(
+        response_json = _post_ollama_chat(
             base_url=config.base_url or "",
             api_key=config.api_key,
             timeout_seconds=config.timeout_seconds,
             payload=api_payload,
-            fallback_payload=build_ollama_chat_payload(
-                model=config.model or "",
-                system_prompt=system_prompt,
-                request_payload=request_payload,
-                disable_thinking=config.disable_thinking,
-            ),
         )
         try:
             content_text = _extract_ollama_message_text(response_json)
@@ -170,19 +130,12 @@ def call_memory_agent(
             model=config.model or "",
             system_prompt=system_prompt,
             request_payload=request_payload,
-            response_format=build_response_format_schema(response_schema),
         )
-
-        response_json = _post_chat_completions_with_fallback(
+        response_json = _post_chat_completions(
             base_url=config.base_url or "",
             api_key=config.api_key,
             timeout_seconds=config.timeout_seconds,
             payload=api_payload,
-            fallback_payload=build_chat_completions_payload(
-                model=config.model or "",
-                system_prompt=system_prompt,
-                request_payload=request_payload,
-            ),
         )
         try:
             content_text = _extract_message_text(response_json)
@@ -190,9 +143,8 @@ def call_memory_agent(
             raise exc.attach_context(raw_api_response=response_json)
 
     try:
-        parsed_payload = parse_agent_response_content(
+        rendered_output = normalize_agent_response_text(
             content_text=content_text,
-            request_mode=request_mode,
             request_payload=request_payload,
         )
     except MemoryAgentClientError as exc:
@@ -204,7 +156,7 @@ def call_memory_agent(
     return MemoryAgentResponse(
         raw_api_response=response_json,
         content_text=content_text,
-        parsed_payload=parsed_payload,
+        rendered_output=rendered_output,
     )
 
 
@@ -215,13 +167,23 @@ def build_codex_exec_prompt(
 ) -> str:
     return "\n\n".join(
         [
-            "You are running inside Codex CLI exec as a pure JSON preprocessing step for easy-memory.",
+            "You are running inside Codex CLI exec as a plain-text preprocessing step for easy-memory.",
             (
                 "Do not use shell commands, do not inspect the workspace, "
                 "do not call MCP tools, and do not modify any files. "
                 "Use only the provided request payload."
             ),
-            "Return exactly one JSON object that matches the supplied output schema.",
+            (
+                "Keep only task-relevant memory blocks. Copy each retained "
+                "rendered_block exactly as provided."
+            ),
+            (
+                f"End the reply with exactly one summary line that starts with "
+                f"{SUMMARY_PREFIX} and keep that summary within {SUMMARY_MAX_CHARS} characters."
+            ),
+            (
+                f"If no memory remains relevant after filtering, return only the {SUMMARY_PREFIX} line."
+            ),
             "Canonical prompt:",
             system_prompt,
             "Input payload JSON:",
@@ -239,7 +201,6 @@ def _run_codex_exec(
     config: MemoryAgentConfig,
     system_prompt: str,
     request_payload: Mapping[str, Any],
-    response_schema: Mapping[str, Any],
 ) -> tuple[dict[str, Any], str]:
     prompt_text = build_codex_exec_prompt(
         system_prompt=system_prompt,
@@ -247,15 +208,9 @@ def _run_codex_exec(
     )
     with tempfile.TemporaryDirectory(prefix="easy-memory-codex-exec-") as tmp_dir:
         tmp_path = Path(tmp_dir)
-        schema_path = tmp_path / "response-schema.json"
-        output_path = tmp_path / "response.json"
-        schema_path.write_text(
-            json.dumps(dict(response_schema), ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        output_path = tmp_path / "response.txt"
         command = build_codex_exec_command(
             config=config,
-            schema_path=schema_path,
             output_path=output_path,
             prompt_text=prompt_text,
         )
@@ -324,7 +279,6 @@ def _run_codex_exec(
 def build_codex_exec_command(
     *,
     config: MemoryAgentConfig,
-    schema_path: Path,
     output_path: Path,
     prompt_text: str,
 ) -> list[str]:
@@ -339,8 +293,6 @@ def build_codex_exec_command(
         "--skip-git-repo-check",
         "-m",
         config.model or DEFAULT_CODEX_MODEL,
-        "--output-schema",
-        str(schema_path),
         "-o",
         str(output_path),
     ]
@@ -374,11 +326,10 @@ def _extract_codex_exec_content(stdout_text: str) -> str:
     stripped = stdout_text.strip()
     if not stripped:
         return ""
-    lines = [line.strip() for line in stripped.splitlines() if line.strip()]
-    for line in reversed(lines):
-        if line.startswith("{") and line.endswith("}"):
-            return line
-    return stripped
+    lines = [line.rstrip() for line in stripped.splitlines() if line.strip()]
+    if not lines:
+        return ""
+    return "\n".join(lines)
 
 
 def _format_codex_exec_output(
@@ -398,9 +349,8 @@ def build_chat_completions_payload(
     model: str,
     system_prompt: str,
     request_payload: Mapping[str, Any],
-    response_format: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    payload = {
+    return {
         "model": model,
         "messages": [
             {"role": "system", "content": system_prompt},
@@ -415,16 +365,12 @@ def build_chat_completions_payload(
         ],
         "temperature": 0,
     }
-    if response_format is not None:
-        payload["response_format"] = dict(response_format)
-    return payload
 
 
 def build_ollama_chat_payload(
     model: str,
     system_prompt: str,
     request_payload: Mapping[str, Any],
-    response_schema: Mapping[str, Any] | None = None,
     disable_thinking: bool = False,
 ) -> dict[str, Any]:
     payload = {
@@ -445,8 +391,6 @@ def build_ollama_chat_payload(
             "temperature": 0,
         },
     }
-    if response_schema is not None:
-        payload["format"] = dict(response_schema)
     if disable_thinking:
         payload["think"] = False
     return payload
@@ -457,49 +401,31 @@ def build_runtime_system_prompt(
     request_mode: str,
     request_payload: Mapping[str, Any],
 ) -> str:
-    required_template = json.dumps(
-        {
-            "schema_version": SCHEMA_VERSION,
-            "mode": request_mode,
-            "status": "ok",
-            "summary": "required non-empty string",
-            "relevant_entries": [
-                {
-                    "entry_id": "entry-id",
-                    "score": 0.95,
-                    "reason": "short factual relevance reason",
-                    "path_ids": [],
-                }
-            ],
-            "suggested_keywords": ["keyword-one"],
-            "warnings": [],
-        },
-        ensure_ascii=False,
-        indent=2,
-    )
+    template_lines = [
+        "<copy zero or more rendered_block values exactly as provided>",
+        "",
+        f"{SUMMARY_PREFIX} <summary no longer than {SUMMARY_MAX_CHARS} characters>",
+    ]
     protocol_lines = [
         "Runtime protocol requirements:",
-        f'1. schema_version must be "{SCHEMA_VERSION}".',
-        f'2. mode must be exactly "{request_mode}".',
-        '3. status must be one of "ok", "no_relevant_memory", or "needs_raw_fallback".',
-        "4. summary is mandatory and must always be a non-empty string.",
-        "5. relevant_entries must be an array of objects with entry_id, score, reason, and path_ids.",
-        "6. suggested_keywords and warnings must be arrays of strings.",
-        "7. Do not wrap the JSON object in Markdown fences.",
-        "8. Do not add any prose before or after the JSON object.",
-        "9. For every relevant entry, path_ids must be a subset of that same entry's own path IDs only.",
-        "10. Never copy a path_id from one entry to another entry.",
-        "11. If you are uncertain about any path_id, return an empty path_ids array for that entry.",
-        "12. If an input entry has no paths, path_ids must be [].",
-        "Required JSON skeleton:",
-        required_template,
-        "Entry/path ownership summary:",
-        build_entry_path_ownership_summary(request_payload),
+        f'1. mode is "{request_mode}". Use task_context to judge relevance.',
+        "2. Remove all unrelated memory blocks completely.",
+        "3. For each retained memory, copy the full rendered_block exactly as given.",
+        "4. Do not rewrite IDs, timestamps, related resource lines, URLs, or file paths.",
+        "5. Do not return JSON, bullets, explanations, or code fences.",
+        "6. End the response with exactly one summary line.",
+        f"7. That summary line must start with {SUMMARY_PREFIX}.",
+        f"8. Keep the summary within {SUMMARY_MAX_CHARS} characters.",
+        f"9. If no memory is relevant, return only the {SUMMARY_PREFIX} line.",
+        "Reply template:",
+        "\n".join(template_lines),
+        "Rendered entry index:",
+        build_rendered_entry_index(request_payload),
     ]
     return "\n\n".join([canonical_prompt, "\n".join(protocol_lines)])
 
 
-def build_entry_path_ownership_summary(
+def build_rendered_entry_index(
     request_payload: Mapping[str, Any],
 ) -> str:
     entries = request_payload.get("entries")
@@ -512,302 +438,126 @@ def build_entry_path_ownership_summary(
         entry_id = item.get("entry_id")
         if not isinstance(entry_id, str):
             continue
-        path_items = item.get("paths")
-        if not isinstance(path_items, list) or not path_items:
-            lines.append(f"- {entry_id}: []")
-            continue
-        path_ids = []
-        for path_item in path_items:
-            if not isinstance(path_item, Mapping):
-                continue
-            path_id = path_item.get("path_id")
-            if isinstance(path_id, str):
-                path_ids.append(path_id)
-        if path_ids:
-            lines.append(
-                f"- {entry_id}: [{', '.join(path_ids)}]"
-            )
-        else:
-            lines.append(f"- {entry_id}: []")
+        log_file = item.get("log_file")
+        rendered_block = item.get("rendered_block")
+        header = f"- {entry_id}"
+        if isinstance(log_file, str) and log_file:
+            header += f" ({log_file})"
+        if isinstance(rendered_block, str) and rendered_block:
+            header += f": {rendered_block.splitlines()[0][:160]}"
+        lines.append(header)
     return "\n".join(lines) if lines else "No entries available."
 
 
-def build_response_json_schema(request_mode: str) -> dict[str, Any]:
-    return {
-        "type": "object",
-        "additionalProperties": False,
-        "required": [
-            "schema_version",
-            "mode",
-            "status",
-            "summary",
-            "relevant_entries",
-            "suggested_keywords",
-            "warnings",
-        ],
-        "properties": {
-            "schema_version": {
-                "type": "string",
-                "enum": [SCHEMA_VERSION],
-            },
-            "mode": {
-                "type": "string",
-                "enum": [request_mode],
-            },
-            "status": {
-                "type": "string",
-                "enum": sorted(ALLOWED_STATUS_VALUES),
-            },
-            "summary": {
-                "type": "string",
-            },
-            "relevant_entries": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "additionalProperties": False,
-                    "required": [
-                        "entry_id",
-                        "score",
-                        "reason",
-                        "path_ids",
-                    ],
-                    "properties": {
-                        "entry_id": {"type": "string"},
-                        "score": {
-                            "type": "number",
-                            "minimum": 0,
-                            "maximum": 1,
-                        },
-                        "reason": {"type": "string"},
-                        "path_ids": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                        },
-                    },
-                },
-            },
-            "suggested_keywords": {
-                "type": "array",
-                "items": {"type": "string"},
-            },
-            "warnings": {
-                "type": "array",
-                "items": {"type": "string"},
-            },
-        },
-    }
-
-
-def build_response_format_schema(response_schema: Mapping[str, Any]) -> dict[str, Any]:
-    return {
-        "type": "json_schema",
-        "json_schema": {
-            "name": "easy_memory_agent_response",
-            "strict": True,
-            "schema": dict(response_schema),
-        },
-    }
-
-
-def parse_agent_response_content(
+def normalize_agent_response_text(
+    *,
     content_text: str,
-    request_mode: str,
     request_payload: Mapping[str, Any],
-) -> dict[str, Any]:
-    stripped = extract_json_object_text(content_text)
+) -> str:
+    stripped = extract_agent_text(content_text)
     if not stripped:
         raise MemoryAgentProtocolError("Agent returned empty content.")
-    try:
-        parsed = json.loads(stripped)
-    except json.JSONDecodeError as exc:
-        raise MemoryAgentProtocolError(
-            "Agent output is not valid JSON."
-        ) from exc
-    if not isinstance(parsed, dict):
-        raise MemoryAgentSchemaError(
-            "Agent output must be a single JSON object."
+
+    lines = [line.rstrip() for line in stripped.splitlines()]
+    while lines and not lines[0].strip():
+        lines.pop(0)
+    while lines and not lines[-1].strip():
+        lines.pop()
+    if not lines:
+        raise MemoryAgentProtocolError("Agent returned empty content.")
+
+    summary_index = last_nonempty_index(lines)
+    if summary_index is None:
+        raise MemoryAgentProtocolError("Agent returned empty content.")
+
+    summary_match = _SUMMARY_LINE_RE.match(lines[summary_index].strip())
+    if summary_match:
+        body_lines = lines[:summary_index]
+        summary_text = summary_match.group("body").strip()
+    else:
+        body_lines = lines
+        summary_text = ""
+
+    summary_text = truncate_summary_text(summary_text)
+    if not summary_text:
+        summary_text = (
+            "Agent filtering completed. Review the retained memories above."
         )
-    validate_agent_response_schema(
-        response_payload=parsed,
-        request_mode=request_mode,
+
+    body_text = "\n".join(body_lines).strip()
+    body_text = canonicalize_body_text(
+        body_text=body_text,
         request_payload=request_payload,
     )
-    return parsed
+    summary_line = f"{SUMMARY_PREFIX} {summary_text}"
+    if body_text:
+        return f"{body_text}\n\n{summary_line}"
+    return summary_line
 
 
-def extract_json_object_text(content_text: str) -> str:
+def extract_agent_text(content_text: str) -> str:
     stripped = content_text.strip()
     if not stripped:
         return ""
-    fenced_match = _FENCED_JSON_RE.fullmatch(stripped)
+    fenced_match = _FENCED_BLOCK_RE.fullmatch(stripped)
     if fenced_match:
         return fenced_match.group("body").strip()
     return stripped
 
 
-def validate_agent_response_schema(
-    response_payload: Mapping[str, Any],
-    request_mode: str,
+def last_nonempty_index(lines: list[str]) -> int | None:
+    for index in range(len(lines) - 1, -1, -1):
+        if lines[index].strip():
+            return index
+    return None
+
+
+def truncate_summary_text(summary_text: str) -> str:
+    normalized = " ".join(summary_text.split())
+    if len(normalized) <= SUMMARY_MAX_CHARS:
+        return normalized
+    return normalized[:SUMMARY_MAX_CHARS].rstrip()
+
+
+def canonicalize_body_text(
+    *,
+    body_text: str,
     request_payload: Mapping[str, Any],
-) -> None:
-    required_keys = {
-        "schema_version",
-        "mode",
-        "status",
-        "summary",
-        "relevant_entries",
-        "suggested_keywords",
-        "warnings",
-    }
-    missing_keys = sorted(required_keys - set(response_payload.keys()))
-    if missing_keys:
-        missing_text = ", ".join(missing_keys)
-        raise MemoryAgentSchemaError(
-            f"Agent response is missing required keys: {missing_text}"
-        )
+) -> str:
+    if not body_text:
+        return ""
 
-    schema_version = response_payload["schema_version"]
-    if schema_version != SCHEMA_VERSION:
-        raise MemoryAgentSchemaError(
-            f"Unexpected schema_version: {schema_version}"
-        )
+    rendered_blocks = collect_rendered_blocks_by_entry_id(request_payload)
+    if not rendered_blocks:
+        return body_text
 
-    mode = response_payload["mode"]
-    if mode not in ALLOWED_MODES:
-        raise MemoryAgentSchemaError(f"Invalid mode: {mode}")
-    if mode != request_mode:
-        raise MemoryAgentSchemaError(
-            f"Agent response mode does not match request mode: {mode}"
-        )
-
-    status = response_payload["status"]
-    if status not in ALLOWED_STATUS_VALUES:
-        raise MemoryAgentSchemaError(f"Invalid status: {status}")
-
-    summary = response_payload["summary"]
-    if not isinstance(summary, str):
-        raise MemoryAgentSchemaError("summary must be a string.")
-
-    suggested_keywords = response_payload["suggested_keywords"]
-    _require_string_list(suggested_keywords, "suggested_keywords")
-
-    warnings = response_payload["warnings"]
-    _require_string_list(warnings, "warnings")
-
-    relevant_entries = response_payload["relevant_entries"]
-    if not isinstance(relevant_entries, list):
-        raise MemoryAgentSchemaError("relevant_entries must be a list.")
-
-    known_entry_ids, known_path_ids = _collect_known_ids(request_payload)
-    for index, item in enumerate(relevant_entries):
-        if not isinstance(item, dict):
-            raise MemoryAgentSchemaError(
-                f"relevant_entries[{index}] must be an object."
-            )
-        _validate_relevant_entry_item(
-            item=item,
-            index=index,
-            known_entry_ids=known_entry_ids,
-            known_path_ids=known_path_ids,
-        )
+    selected_ids: list[str] = []
+    seen_ids: set[str] = set()
+    for match in _ENTRY_ID_RE.finditer(body_text):
+        entry_id = match.group("id")
+        if entry_id in rendered_blocks and entry_id not in seen_ids:
+            seen_ids.add(entry_id)
+            selected_ids.append(entry_id)
+    if not selected_ids:
+        return body_text
+    return "\n\n".join(rendered_blocks[entry_id] for entry_id in selected_ids)
 
 
-def _validate_relevant_entry_item(
-    item: Mapping[str, Any],
-    index: int,
-    known_entry_ids: set[str],
-    known_path_ids: dict[str, set[str]],
-) -> None:
-    required_keys = {"entry_id", "score", "reason", "path_ids"}
-    missing_keys = sorted(required_keys - set(item.keys()))
-    if missing_keys:
-        missing_text = ", ".join(missing_keys)
-        raise MemoryAgentSchemaError(
-            f"relevant_entries[{index}] is missing required keys: {missing_text}"
-        )
-
-    entry_id = item["entry_id"]
-    if not isinstance(entry_id, str):
-        raise MemoryAgentSchemaError(
-            f"relevant_entries[{index}].entry_id must be a string."
-        )
-    if entry_id not in known_entry_ids:
-        raise MemoryAgentSchemaError(
-            f"relevant_entries[{index}] references unknown entry_id: {entry_id}"
-        )
-
-    score = item["score"]
-    if not isinstance(score, (int, float)) or isinstance(score, bool):
-        raise MemoryAgentSchemaError(
-            f"relevant_entries[{index}].score must be a number."
-        )
-    if score < 0 or score > 1:
-        raise MemoryAgentSchemaError(
-            f"relevant_entries[{index}].score must be in the range 0.0 to 1.0."
-        )
-
-    reason = item["reason"]
-    if not isinstance(reason, str):
-        raise MemoryAgentSchemaError(
-            f"relevant_entries[{index}].reason must be a string."
-        )
-
-    path_ids = item["path_ids"]
-    _require_string_list(path_ids, f"relevant_entries[{index}].path_ids")
-    known_ids_for_entry = known_path_ids[entry_id]
-    for path_id in path_ids:
-        if path_id not in known_ids_for_entry:
-            raise MemoryAgentSchemaError(
-                f"relevant_entries[{index}] references unknown path_id for entry {entry_id}: {path_id}"
-            )
-
-
-def _collect_known_ids(
+def collect_rendered_blocks_by_entry_id(
     request_payload: Mapping[str, Any],
-) -> tuple[set[str], dict[str, set[str]]]:
+) -> dict[str, str]:
     entries = request_payload.get("entries")
     if not isinstance(entries, list):
-        raise MemoryAgentSchemaError(
-            "Request payload must include an entries list for schema validation."
-        )
-
-    known_entry_ids: set[str] = set()
-    known_path_ids: dict[str, set[str]] = {}
-    for index, item in enumerate(entries):
-        if not isinstance(item, dict):
-            raise MemoryAgentSchemaError(
-                f"Request entries[{index}] must be an object."
-            )
+        return {}
+    blocks: dict[str, str] = {}
+    for item in entries:
+        if not isinstance(item, Mapping):
+            continue
         entry_id = item.get("entry_id")
-        if not isinstance(entry_id, str):
-            raise MemoryAgentSchemaError(
-                f"Request entries[{index}].entry_id must be a string."
-            )
-        if entry_id in known_entry_ids:
-            raise MemoryAgentSchemaError(
-                f"Request entries contain duplicate entry_id: {entry_id}"
-            )
-        known_entry_ids.add(entry_id)
-        path_items = item.get("paths", [])
-        if not isinstance(path_items, list):
-            raise MemoryAgentSchemaError(
-                f"Request entries[{index}].paths must be a list."
-            )
-        path_ids_for_entry: set[str] = set()
-        for path_index, path_item in enumerate(path_items):
-            if not isinstance(path_item, dict):
-                raise MemoryAgentSchemaError(
-                    f"Request entries[{index}].paths[{path_index}] must be an object."
-                )
-            path_id = path_item.get("path_id")
-            if not isinstance(path_id, str):
-                raise MemoryAgentSchemaError(
-                    f"Request entries[{index}].paths[{path_index}].path_id must be a string."
-                )
-            path_ids_for_entry.add(path_id)
-        known_path_ids[entry_id] = path_ids_for_entry
-    return known_entry_ids, known_path_ids
+        rendered_block = item.get("rendered_block")
+        if isinstance(entry_id, str) and isinstance(rendered_block, str):
+            blocks[entry_id] = rendered_block.strip()
+    return blocks
 
 
 def _require_request_mode(request_payload: Mapping[str, Any]) -> str:
@@ -817,16 +567,6 @@ def _require_request_mode(request_payload: Mapping[str, Any]) -> str:
     if mode not in ALLOWED_MODES:
         raise MemoryAgentSchemaError(f"Invalid request mode: {mode}")
     return mode
-
-
-def _require_string_list(value: Any, label: str) -> None:
-    if not isinstance(value, list):
-        raise MemoryAgentSchemaError(f"{label} must be a list.")
-    for index, item in enumerate(value):
-        if not isinstance(item, str):
-            raise MemoryAgentSchemaError(
-                f"{label}[{index}] must be a string."
-            )
 
 
 def _post_chat_completions(
@@ -867,78 +607,6 @@ def _post_ollama_chat(
         timeout_seconds=timeout_seconds,
         payload=payload,
     )
-
-
-def _post_chat_completions_with_fallback(
-    base_url: str,
-    api_key: str | None,
-    timeout_seconds: float,
-    payload: Mapping[str, Any],
-    fallback_payload: Mapping[str, Any],
-) -> dict[str, Any]:
-    try:
-        return _post_chat_completions(
-            base_url=base_url,
-            api_key=api_key,
-            timeout_seconds=timeout_seconds,
-            payload=payload,
-        )
-    except MemoryAgentTransportError as exc:
-        if not _should_retry_without_structured_output(exc):
-            raise
-    return _post_chat_completions(
-        base_url=base_url,
-        api_key=api_key,
-        timeout_seconds=timeout_seconds,
-        payload=fallback_payload,
-    )
-
-
-def _post_ollama_chat_with_fallback(
-    base_url: str,
-    api_key: str | None,
-    timeout_seconds: float,
-    payload: Mapping[str, Any],
-    fallback_payload: Mapping[str, Any],
-) -> dict[str, Any]:
-    try:
-        return _post_ollama_chat(
-            base_url=base_url,
-            api_key=api_key,
-            timeout_seconds=timeout_seconds,
-            payload=payload,
-        )
-    except MemoryAgentTransportError as exc:
-        if not _should_retry_without_structured_output(exc):
-            raise
-    return _post_ollama_chat(
-        base_url=base_url,
-        api_key=api_key,
-        timeout_seconds=timeout_seconds,
-        payload=fallback_payload,
-    )
-
-
-def _should_retry_without_structured_output(
-    exc: MemoryAgentTransportError,
-) -> bool:
-    message = str(exc).lower()
-    if (
-        "response_format" not in message
-        and "json_schema" not in message
-        and "format" not in message
-        and "schema" not in message
-    ):
-        return False
-    markers = (
-        "unsupported",
-        "not supported",
-        "unknown",
-        "invalid",
-        "unexpected",
-        "not allowed",
-    )
-    return any(marker in message for marker in markers)
 
 
 def _post_json_request(
