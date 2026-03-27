@@ -22,17 +22,26 @@
         {
           "path_id": "path-001",
           "resource_type": "local_path",
-          "path": "/Users/example/workspace/project-a/src/memory_agent_config.py",
-          "directory": "/Users/example/workspace/project-a/src"
+          "path": "src/memory_agent_config.py",
+          "directory": "src",
+          "path_format": "project_relative"
         },
         {
           "path_id": "path-002",
+          "resource_type": "local_path",
+          "path": "/opt/shared/docs/memory-agent.md",
+          "directory": "/opt/shared/docs",
+          "path_format": "absolute",
+          "system_hint": "Darwin arm64 @example-host"
+        },
+        {
+          "path_id": "path-003",
           "resource_type": "url",
           "path": "https://example.com/docs/easy-memory",
           "directory": "https://example.com/docs"
         }
       ],
-      "rendered_block": "2026-03-13.log: [ID:entry-001] [REF:high] [FACT:true] Added project-local related-resource metadata support and required task-context for read/search flows. [PATHS:[{\"id\":\"path-001\",\"path\":\"/Users/example/workspace/project-a/src/memory_agent_config.py\",\"directory\":\"/Users/example/workspace/project-a/src\",\"resource_type\":\"local_path\"},{\"id\":\"path-002\",\"path\":\"https://example.com/docs/easy-memory\",\"directory\":\"https://example.com/docs\",\"resource_type\":\"url\"}]] [TIME:2026-03-13:16:00]\n  Related resource ID path-001 [local_path]: /Users/example/workspace/project-a/src/memory_agent_config.py (container: /Users/example/workspace/project-a/src)\n  Related resource ID path-002 [url]: https://example.com/docs/easy-memory (container: https://example.com/docs)"
+      "rendered_block": "2026-03-13.log: [ID:entry-001] [REF:high] [FACT:true] Added project-local related-resource metadata support and required task-context for read/search flows. [PATHS:[{\"id\":\"path-001\",\"path\":\"src/memory_agent_config.py\",\"directory\":\"src\",\"resource_type\":\"local_path\",\"path_format\":\"project_relative\"},{\"id\":\"path-002\",\"path\":\"/opt/shared/docs/memory-agent.md\",\"directory\":\"/opt/shared/docs\",\"resource_type\":\"local_path\",\"path_format\":\"absolute\",\"system_hint\":\"Darwin arm64 @example-host\"},{\"id\":\"path-003\",\"path\":\"https://example.com/docs/easy-memory\",\"directory\":\"https://example.com/docs\",\"resource_type\":\"url\"}]] [TIME:2026-03-13:16:00]\n  Related resource ID path-001 [local_path, project_relative]: src/memory_agent_config.py (container: src)\n  Related resource ID path-002 [local_path, absolute]: /opt/shared/docs/memory-agent.md (container: /opt/shared/docs; system: Darwin arm64 @example-host)\n  Related resource ID path-003 [url]: https://example.com/docs/easy-memory (container: https://example.com/docs)"
     },
     {
       "entry_id": "entry-002",

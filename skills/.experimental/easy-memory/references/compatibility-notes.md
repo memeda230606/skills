@@ -7,7 +7,10 @@ related-resource metadata.
 
 `easy-memory` originally stored only local filesystem paths.
 Later revisions expanded the same metadata channel so it can also store:
-- absolute local filesystem paths
+- project-relative local filesystem paths for resources inside the current
+  working directory
+- absolute local filesystem paths for resources outside the current working
+  directory
 - URLs
 - document addresses
 
@@ -27,7 +30,8 @@ kept stable even though their meaning is now broader.
   - Current meaning when encountered: list of related resource IDs
 - `--related-path`
   - Historical CLI option name
-  - Current meaning: local absolute path or URL/document address
+  - Current meaning: project-local path, external absolute path, or
+    URL/document address
 - `--path-update`
   - Historical CLI option name
   - Current meaning: replace one related resource by ID
@@ -44,19 +48,29 @@ kept stable even though their meaning is now broader.
   `--path-clear` does not need renaming.
 - New implementations should interpret these historical names using the broader
   related-resource meaning.
+- Older local-path entries that stored absolute paths remain valid and should be
+  interpreted as `path_format:"absolute"` when no explicit `path_format` is
+  present.
 
 ## Resource Interpretation
 
 Each related resource object should be interpreted using `resource_type`:
 - `local_path`
-  - `path` is an absolute local filesystem path
-  - `directory` is the absolute parent directory, or the directory itself if the
-    stored target is already a directory
+  - `path_format:"project_relative"` means `path` is relative to the current
+    working directory and `directory` is the corresponding relative container
+  - `path_format:"absolute"` means `path` is an absolute local filesystem path
+    and `directory` is the absolute parent directory, or the directory itself
+    if the stored target is already a directory
+  - `system_hint` may be present for `path_format:"absolute"` entries to record
+    a brief host hint for cross-machine work
 - `url`
   - `path` is the URL or document address
   - `directory` is the derived parent or container URL
 
 If older metadata does not include `resource_type`, the runtime should infer it.
+If older local-path metadata does not include `path_format`, the runtime should
+infer `absolute` for absolute-looking local paths and `project_relative` for
+relative-looking local paths.
 
 ## Reading Strategy
 

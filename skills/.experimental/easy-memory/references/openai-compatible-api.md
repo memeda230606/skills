@@ -198,11 +198,20 @@ Each `paths` item should include:
 - `path`
 - `directory`
 
+Each `paths` item may additionally include:
+- `path_format`
+- `system_hint`
+
 Compatibility naming note:
 - `paths` and `path_id` remain the canonical field names in request payloads
   for backward compatibility.
 - Each item should nevertheless be interpreted as a related resource that may be
   either a local path or a URL/document address.
+- For `resource_type:"local_path"`, `path_format:"project_relative"` means the
+  `path` and `directory` values are relative to `cwd`, while
+  `path_format:"absolute"` means they are absolute local filesystem values.
+- `system_hint` is optional and is intended for external absolute local paths so
+  cross-machine logs can be disambiguated quickly.
 
 `rendered_block` is the exact block the agent should copy back if that entry
 remains relevant.

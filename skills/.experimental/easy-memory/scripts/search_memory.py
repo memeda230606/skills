@@ -116,7 +116,12 @@ def main() -> int:
             haystack = line
             if entry:
                 related_text = " ".join(
-                    f"{item['path']} {item['directory']} {item.get('resource_type', '')}"
+                    (
+                        f"{item['path']} {item['directory']} "
+                        f"{item.get('resource_type', '')} "
+                        f"{item.get('path_format', '')} "
+                        f"{item.get('system_hint', '')}"
+                    )
                     for item in entry["path_entries"]
                 )
                 haystack = f"{entry['content']} {related_text}".strip()
@@ -250,12 +255,7 @@ def build_request_entry(item: dict) -> dict:
         "content": item["entry"]["content"],
         "timestamp": item["entry"]["timestamp"],
         "paths": [
-            {
-                "path_id": path_item["id"],
-                "path": path_item["path"],
-                "directory": path_item["directory"],
-                "resource_type": path_item["resource_type"],
-            }
+            build_request_path(path_item)
             for path_item in item["path_entries"]
         ],
         "rendered_block": render_entry_block(
@@ -276,6 +276,20 @@ def render_entry_block(
     for related_line in format_related_path_lines(path_entries):
         rendered_lines.append(f"  {related_line}")
     return "\n".join(rendered_lines)
+
+
+def build_request_path(path_item: dict) -> dict:
+    payload = {
+        "path_id": path_item["id"],
+        "path": path_item["path"],
+        "directory": path_item["directory"],
+        "resource_type": path_item["resource_type"],
+    }
+    if path_item.get("path_format"):
+        payload["path_format"] = path_item["path_format"]
+    if path_item.get("system_hint"):
+        payload["system_hint"] = path_item["system_hint"]
+    return payload
 
 
 if __name__ == "__main__":

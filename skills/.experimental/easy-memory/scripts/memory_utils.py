@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import posixpath
+import platform
 import re
+import socket
 from datetime import date, datetime
 from pathlib import Path
 from typing import Optional
@@ -25,7 +27,9 @@ INIT_LOG_NAME = "init.log"
 AGENTS_FILE_NAME = "AGENTS.MD"
 PATHS_TOKEN_PREFIX = " [PATHS:"
 ALLOWED_RESOURCE_TYPES = {"local_path", "url"}
+ALLOWED_LOCAL_PATH_FORMATS = {"project_relative", "absolute"}
 SUPPORTED_URL_SCHEMES = {"http", "https"}
+WINDOWS_ABSOLUTE_PATH_RE = re.compile(r"^(?:[A-Za-z]:[\\/]|\\\\)")
 
 
 def _json_error() -> SystemExit:
@@ -150,6 +154,8 @@ def normalize_related_paths(raw_paths: list[str]) -> list[dict[str, str]]:
                 normalized_entry["path"],
                 resource_type=normalized_entry["resource_type"],
                 directory=normalized_entry["directory"],
+                path_format=normalized_entry.get("path_format"),
+                system_hint=normalized_entry.get("system_hint"),
             )
         )
     return entries
@@ -165,22 +171,37 @@ def normalize_single_related_path(raw_path: str) -> dict[str, str]:
     if normalized_url is not None:
         return normalized_url
 
+    workspace_root = current_workspace_root()
     candidate = Path(normalized_raw_path).expanduser()
     if not candidate.is_absolute():
-        raise SystemExit(
-            "related-path values must be absolute local paths or supported URLs."
-        )
+        candidate = workspace_root / candidate
     if not candidate.exists():
         raise SystemExit(
             "related-path local paths must exist. Use update_memory.py to clear or replace stale paths."
         )
-    normalized_path = str(candidate.resolve())
-    resolved = Path(normalized_path)
-    directory = normalized_path if resolved.is_dir() else str(resolved.parent)
+    resolved = candidate.resolve()
+
+    try:
+        relative_path = resolved.relative_to(workspace_root)
+        normalized_path = path_to_storage_string(relative_path)
+        relative_directory = relative_path if resolved.is_dir() else relative_path.parent
+        directory = path_to_storage_string(relative_directory)
+        return {
+            "path": normalized_path,
+            "directory": directory,
+            "resource_type": "local_path",
+            "path_format": "project_relative",
+        }
+    except ValueError:
+        normalized_path = str(resolved)
+        directory = normalized_path if resolved.is_dir() else str(resolved.parent)
+
     return {
         "path": normalized_path,
         "directory": directory,
         "resource_type": "local_path",
+        "path_format": "absolute",
+        "system_hint": current_system_hint(),
     }
 
 
@@ -241,25 +262,85 @@ def infer_related_resource_type(
     return "local_path"
 
 
+def infer_local_path_format(
+    path_value: str,
+    *,
+    directory: str | None = None,
+) -> str:
+    if looks_like_absolute_local_path(path_value):
+        return "absolute"
+    if looks_like_absolute_local_path(directory or ""):
+        return "absolute"
+    return "project_relative"
+
+
+def current_workspace_root() -> Path:
+    return Path.cwd().resolve()
+
+
+def path_to_storage_string(path_value: Path) -> str:
+    rendered = path_value.as_posix()
+    return rendered if rendered else "."
+
+
+def current_system_hint() -> str:
+    system_name = platform.system() or "UnknownOS"
+    machine = platform.machine() or "unknown-arch"
+    hostname = socket.gethostname().split(".")[0].strip() or "unknown-host"
+    return f"{system_name} {machine} @{hostname}"
+
+
+def looks_like_absolute_local_path(path_value: str) -> bool:
+    if not path_value:
+        return False
+    if WINDOWS_ABSOLUTE_PATH_RE.match(path_value):
+        return True
+    return Path(path_value).is_absolute()
+
+
 def make_related_path_entry(
-    absolute_path: str,
+    path_value: str,
     path_id: Optional[str] = None,
     *,
     resource_type: str | None = None,
     directory: str | None = None,
+    path_format: str | None = None,
+    system_hint: str | None = None,
 ) -> dict[str, str]:
-    normalized_entry = normalize_single_related_path(absolute_path)
+    normalized_entry = normalize_single_related_path(path_value)
     normalized_path = normalized_entry["path"]
     normalized_directory = directory or normalized_entry["directory"]
     normalized_type = resource_type or normalized_entry["resource_type"]
     if normalized_type not in ALLOWED_RESOURCE_TYPES:
         raise SystemExit("related reference resource_type must be local_path or url.")
-    return {
+    result = {
         "id": path_id or uuid4().hex,
         "path": normalized_path,
         "directory": normalized_directory,
         "resource_type": normalized_type,
     }
+    if normalized_type == "local_path":
+        normalized_path_format = (
+            path_format
+            or normalized_entry.get("path_format")
+            or infer_local_path_format(
+                normalized_path,
+                directory=normalized_directory,
+            )
+        )
+        if normalized_path_format not in ALLOWED_LOCAL_PATH_FORMATS:
+            raise SystemExit(
+                "related reference path_format must be project_relative or absolute."
+            )
+        result["path_format"] = normalized_path_format
+        normalized_system_hint = (
+            system_hint
+            or normalized_entry.get("system_hint")
+            or ""
+        )
+        if normalized_path_format == "absolute" and normalized_system_hint:
+            result["system_hint"] = normalized_system_hint
+    return result
 
 
 def serialize_related_paths(path_entries: list[dict[str, str]]) -> str:
@@ -284,6 +365,8 @@ def deserialize_related_paths(raw_value: str) -> list[dict[str, str]]:
         path_value = item.get("path")
         directory = item.get("directory")
         resource_type = item.get("resource_type")
+        path_format = item.get("path_format")
+        system_hint = item.get("system_hint")
         if not isinstance(path_id, str) or not path_id:
             raise _json_error()
         if path_id in seen_ids:
@@ -302,14 +385,31 @@ def deserialize_related_paths(raw_value: str) -> list[dict[str, str]]:
             raise _json_error()
         if resource_type not in ALLOWED_RESOURCE_TYPES:
             raise _json_error()
-        parsed_entries.append(
-            {
-                "id": path_id,
-                "path": path_value,
-                "directory": directory,
-                "resource_type": resource_type,
-            }
-        )
+        parsed_entry = {
+            "id": path_id,
+            "path": path_value,
+            "directory": directory,
+            "resource_type": resource_type,
+        }
+        if resource_type == "local_path":
+            if path_format is None:
+                path_format = infer_local_path_format(
+                    path_value,
+                    directory=directory,
+                )
+            if not isinstance(path_format, str):
+                raise _json_error()
+            if path_format not in ALLOWED_LOCAL_PATH_FORMATS:
+                raise _json_error()
+            parsed_entry["path_format"] = path_format
+            if system_hint is not None:
+                if not isinstance(system_hint, str):
+                    raise _json_error()
+                if system_hint:
+                    parsed_entry["system_hint"] = system_hint
+        elif system_hint is not None and not isinstance(system_hint, str):
+            raise _json_error()
+        parsed_entries.append(parsed_entry)
     return parsed_entries
 
 
@@ -322,6 +422,8 @@ def clear_related_path_entry(path_entries: list[dict[str, str]], path_id: str) -
         if item["id"] == path_id:
             item["path"] = ""
             item["directory"] = ""
+            item.pop("system_hint", None)
+            item.pop("path_format", None)
             return
     raise SystemExit(f"Related resource ID not found: {path_id}")
 
@@ -329,9 +431,9 @@ def clear_related_path_entry(path_entries: list[dict[str, str]], path_id: str) -
 def replace_related_path_entry(
     path_entries: list[dict[str, str]],
     path_id: str,
-    absolute_path: str,
+    path_value: str,
 ) -> None:
-    replacement = make_related_path_entry(absolute_path, path_id=path_id)
+    replacement = make_related_path_entry(path_value, path_id=path_id)
     for item in path_entries:
         if item["id"] == path_id:
             item.update(replacement)
@@ -350,9 +452,30 @@ def format_related_path_lines(path_entries: Optional[list[dict[str, str]]]) -> l
             item["path"],
             directory=item["directory"],
         )
+        detail_parts = [rendered_type]
+        rendered_path_format = item.get("path_format")
+        if (
+            not rendered_path_format
+            and rendered_type == "local_path"
+            and (item["path"] or item["directory"])
+        ):
+            rendered_path_format = infer_local_path_format(
+                item["path"],
+                directory=item["directory"],
+            )
+        if rendered_path_format:
+            detail_parts.append(rendered_path_format)
+        detail_text = ", ".join(detail_parts)
+        extras = []
+        system_hint = item.get("system_hint")
+        if system_hint:
+            extras.append(f"system: {system_hint}")
+        extra_text = ""
+        if extras:
+            extra_text = "; " + "; ".join(extras)
         lines.append(
-            f"Related resource ID {item['id']} [{rendered_type}]: {rendered_path} "
-            f"(container: {rendered_directory})"
+            f"Related resource ID {item['id']} [{detail_text}]: {rendered_path} "
+            f"(container: {rendered_directory}{extra_text})"
         )
     return lines
 

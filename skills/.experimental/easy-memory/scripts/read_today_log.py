@@ -150,12 +150,7 @@ def build_request_entry(item: dict) -> dict:
         "content": entry["content"],
         "timestamp": entry["timestamp"],
         "paths": [
-            {
-                "path_id": path_item["id"],
-                "path": path_item["path"],
-                "directory": path_item["directory"],
-                "resource_type": path_item["resource_type"],
-            }
+            build_request_path(path_item)
             for path_item in entry["path_entries"]
         ],
         "rendered_block": render_entry_block(item["line"], entry["path_entries"]),
@@ -178,6 +173,20 @@ def render_entry_block(line: str, path_entries: list[dict]) -> str:
     for related_line in format_related_path_lines(path_entries):
         rendered_lines.append(f"  {related_line}")
     return "\n".join(rendered_lines)
+
+
+def build_request_path(path_item: dict) -> dict:
+    payload = {
+        "path_id": path_item["id"],
+        "path": path_item["path"],
+        "directory": path_item["directory"],
+        "resource_type": path_item["resource_type"],
+    }
+    if path_item.get("path_format"):
+        payload["path_format"] = path_item["path_format"]
+    if path_item.get("system_hint"):
+        payload["system_hint"] = path_item["system_hint"]
+    return payload
 
 
 if __name__ == "__main__":

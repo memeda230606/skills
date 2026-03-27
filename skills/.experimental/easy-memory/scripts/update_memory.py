@@ -44,8 +44,9 @@ def parse_args() -> argparse.Namespace:
         action="append",
         default=None,
         help=(
-            "Replace the stored related-path list with this absolute local "
-            "path or URL/document address. Repeat to store multiple references."
+            "Replace the stored related-path list with project-local paths, "
+            "external absolute local paths, or URL/document addresses. "
+            "Repeat to store multiple references."
         ),
     )
     parser.add_argument(
@@ -59,7 +60,8 @@ def parse_args() -> argparse.Namespace:
         default=None,
         help=(
             "Replace one stored reference in the form "
-            "PATH_ID=/absolute/path-or-https://url. The existing path ID is preserved."
+            "PATH_ID=<project/path|/absolute/path|https://url>. The existing "
+            "path ID is preserved."
         ),
     )
     parser.add_argument(
@@ -78,7 +80,7 @@ def parse_path_update(raw_value: str) -> tuple[str, str]:
     path_id, separator, path_value = raw_value.partition("=")
     if not separator or not path_id or not path_value:
         raise SystemExit(
-            "path-update must use the form PATH_ID=/absolute/path-or-https://url."
+            "path-update must use the form PATH_ID=<project/path|/absolute/path|https://url>."
         )
     return path_id, path_value
 

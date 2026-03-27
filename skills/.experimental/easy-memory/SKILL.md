@@ -62,7 +62,7 @@ All other scripts require `init.log` to exist and will exit if initialization ha
 
 1. At the start of the current session (before the first task), run `scripts/read_today_log.py` to load the full log for today.
 2. At the start of the current session (before the first task), run `scripts/search_memory.py` with English-preferred keywords for the session/task. Only repeat steps 1-2 when necessary for the task. Choose `--max-results` based on task complexity (this is the memory search depth).
-3. Before finishing or submitting any task, append a new entry with `scripts/write_memory.py` following the log rules below. When the task is tied to concrete files, pages, or documents, also store the absolute local paths or highly related URLs/document addresses so they can be reopened quickly.
+3. Before finishing or submitting any task, append a new entry with `scripts/write_memory.py` following the log rules below. When the task is tied to concrete files, pages, or documents, also store project-relative local paths when the targets are inside the current working directory, and store absolute local paths only when the targets are outside the project; highly related URLs/document addresses may also be stored so they can be reopened quickly.
 4. Log entries should be written in English when possible; UTF-8 is accepted.
 5. `read_today_log.py` and `search_memory.py` must receive a required `--task-context` argument containing the user's question and problem context. Unless a dedicated memory-management agent is enabled, this argument is reserved for future preprocessing and must not alter the default read/search results.
 
@@ -92,9 +92,10 @@ Rules:
 - Entries should be written in English when possible; UTF-8 is accepted.
 - The timestamp must be the final token of the line and must be accurate to minutes.
 - Each entry must include a unique ID, a reference level, and a factual flag.
-- `PATHS` is optional. When present, it must be a JSON array of objects like `{"id":"<path-id>","path":"<absolute-path-or-url>","directory":"<absolute-directory-or-container-url>","resource_type":"<local_path|url>"}`.
+- `PATHS` is optional. When present, it must be a JSON array of objects like `{"id":"<path-id>","path":"<project-relative-path-or-absolute-path-or-url>","directory":"<project-relative-directory-or-absolute-directory-or-container-url>","resource_type":"<local_path|url>"}`.
 - Every stored related reference must use a unique related resource ID.
-- For `resource_type:"local_path"`, `path` must be an absolute local path and `directory` must be the absolute parent directory (or the directory itself if the stored target is a directory).
+- For `resource_type:"local_path"` inside the current working directory, `path` must be stored as a project-relative path, `directory` must be the corresponding project-relative parent directory (or `.` when the parent is the project root), and `path_format` must be `project_relative`.
+- For `resource_type:"local_path"` outside the current working directory, `path` must be an absolute local path, `directory` must be the absolute parent directory (or the directory itself if the stored target is a directory), `path_format` must be `absolute`, and `system_hint` should record a brief host hint such as OS, CPU architecture, and short hostname.
 - For `resource_type:"url"`, `path` must be a URL/document address and `directory` must be the derived parent/container URL so the agent can reopen related locations quickly.
 
 Compatibility naming note:
@@ -148,15 +149,16 @@ Older entries without `PATHS` metadata must remain searchable without errors.
 ### Write memory
 
 ```
-python3 scripts/write_memory.py --content "..." --factual true --ref-level medium --related-path /abs/path/to/file.py --related-path https://example.com/docs/memory-agent
+python3 scripts/write_memory.py --content "..." --factual true --ref-level medium --related-path skills/.experimental/easy-memory/scripts/write_memory.py --related-path /opt/shared/specs/memory-agent.md --related-path https://example.com/docs/memory-agent
 ```
 
 Appends a new entry to today's log. Content should be English and single-line; UTF-8 is accepted. The script generates the unique ID and timestamp.
 
 Write-memory instructions:
 - Use `--related-path` for the current file, related directory, or any highly related URL/document address that should be reopened quickly later. Pass the option multiple times for multiple references.
-- Every `--related-path` value must be either an absolute local path or a supported URL/document address.
-- The script stores each related reference with its own unique related resource ID, resource type, and derived container string.
+- Every `--related-path` value must be either a project-local path, an external absolute local path, or a supported URL/document address.
+- The script stores project-local targets as project-relative paths. It stores external local targets as absolute paths with `path_format:"absolute"` plus a brief `system_hint`.
+- The script stores each related reference with its own unique related resource ID, resource type, derived container string, and any needed path-format metadata.
 - If no file, page, or document is materially related to the memory entry, you may omit `--related-path`.
 
 ### Update memory
@@ -174,7 +176,7 @@ Use update when:
 Update-memory instructions:
 - If the related files/pages/documents changed substantially, replace the full set with repeated `--related-path`.
 - If all stored related references are stale, clear them with `--clear-related-paths`.
-- If one stored path or URL is no longer valid or its relevance has dropped, overwrite that specific related reference by ID with `--path-update <path-id>=/new/absolute/path` or `--path-update <path-id>=https://new.example/doc`, or clear it with `--path-clear <path-id>`.
+- If one stored path or URL is no longer valid or its relevance has dropped, overwrite that specific related reference by ID with `--path-update <path-id>=project/relative/path`, `--path-update <path-id>=/new/absolute/path`, or `--path-update <path-id>=https://new.example/doc`, or clear it with `--path-clear <path-id>`.
 - When updating related reference metadata, keep only files, pages, or documents that remain highly relevant to the updated memory content.
 
 ### Delete memory

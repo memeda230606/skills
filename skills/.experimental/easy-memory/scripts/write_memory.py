@@ -43,9 +43,10 @@ def parse_args() -> argparse.Namespace:
         action="append",
         default=None,
         help=(
-            "Absolute local path or URL/document address for the current or "
-            "highly related file, directory, page, or document. Repeat this "
-            "option to store multiple references."
+            "Project-local path, external absolute local path, or "
+            "URL/document address for the current or highly related file, "
+            "directory, page, or document. Repeat this option to store "
+            "multiple references."
         ),
     )
     return parser.parse_args()
